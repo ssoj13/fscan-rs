@@ -35,7 +35,7 @@ An unreadable child path increments `Progress::errors`; callers should treat a n
 
 ## Choose a backend
 
-`scan_standard` runs on Windows, Linux, and macOS and is the low-memory choice. On Windows, `scan_ntfs_tree` returns a measured tree, and `scan_ntfs_stream` sends that tree's entries to a sink. `scan_ntfs_tree_with_progress` reports NTFS scan phases while it works. `scan_ntfs_tree_with_options(root, cancel, dedupe_hardlinks, on_progress)` lets an indexer keep every hard-link name by passing `false`; tree consumers that count disk usage can pass `true`. A native scan may need raw-volume access; its caller can fall back to `scan_standard` if NTFS is unavailable.
+`scan_standard` runs on Windows, Linux, and macOS and is the low-memory choice. On Windows, `scan_ntfs_tree` returns a measured tree, and `scan_ntfs_stream` sends that tree's entries to a sink. `scan_ntfs_tree_with_progress` reports NTFS scan phases while it works. `scan_ntfs_tree_with_options(root, cancel, dedupe_hardlinks, on_progress)` lets an indexer keep every hard-link name by passing `false`; tree consumers that count disk usage can pass `true`. Native scans return a typed `ScanFailure`: distinguish cancellation from backend unavailability or another failure before deciding whether to fall back to `scan_standard`.
 
 The NTFS backend currently materializes a tree before returning or streaming entries. It refuses scans above 250,000 nodes or MFT records, so large scans should fall back to the standard backend. This is a safety limit, not an optimized disk-backed MFT index. Native volume-root scans can require elevation and may omit alternate hard-link names; name indexes should scan volume roots with `scan_standard`. A new scan with either backend still traverses the filesystem; this crate does not implement incremental watching.
 
@@ -48,3 +48,5 @@ cargo fmt --check
 ```
 
 The NTFS implementation was extracted from Squarebob. The crate is independent of Squarebob's UI, cache format, and Locate's SQLite schema.
+
+Squarebob and filesystem MCP pin this private repository by Git revision. A fresh checkout of either consumer needs GitHub access to `ssoj13/fscan-rs`.
