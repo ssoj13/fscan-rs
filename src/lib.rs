@@ -18,12 +18,12 @@ pub use ntfs::{
     scan_ntfs_tree, scan_ntfs_tree_with_options, scan_ntfs_tree_with_progress,
 };
 #[cfg(windows)]
-pub use scanner::{ScanDiagnostics, ScanMsg, ScanPhase, ScanProgressUpdate, TreeEntry};
+pub use scanner::{ScanDiagnostics, ScanFailure, ScanMsg, ScanPhase, ScanProgressUpdate, TreeEntry};
 
 #[cfg(windows)]
 #[derive(Debug)]
 pub enum NtfsStreamError {
-    Backend(anyhow::Error),
+    Backend(ScanFailure),
     Sink(anyhow::Error),
     Cancelled,
 }
@@ -38,7 +38,10 @@ pub fn scan_ntfs_stream(
     include: impl Fn(&Path) -> bool,
     on_entry: impl FnMut(&Entry, Progress) -> anyhow::Result<Visit>,
 ) -> Result<Progress, NtfsStreamError> {
-    let (tree, diagnostics) = scan_ntfs_tree(root, cancel).map_err(NtfsStreamError::Backend)?;
+    let (tree, diagnostics) = scan_ntfs_tree(root, cancel).map_err(|error| match error {
+        ScanFailure::Cancelled => NtfsStreamError::Cancelled,
+        other => NtfsStreamError::Backend(other),
+    })?;
     stream_ntfs_tree(&tree, &diagnostics, cancel, include, on_entry)
 }
 

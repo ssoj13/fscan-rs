@@ -398,7 +398,7 @@ pub fn is_ntfs_available(path: &Path) -> bool {
 pub fn scan_ntfs_tree(
     root: &Path,
     cancel: &AtomicBool,
-) -> anyhow::Result<(DirEntry, ScanDiagnostics)> {
+) -> Result<(DirEntry, ScanDiagnostics), ScanFailure> {
     scan_ntfs_tree_with_progress(root, cancel, |_| {})
 }
 
@@ -407,7 +407,7 @@ pub fn scan_ntfs_tree_with_progress(
     root: &Path,
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(ScanProgressUpdate),
-) -> anyhow::Result<(DirEntry, ScanDiagnostics)> {
+) -> Result<(DirEntry, ScanDiagnostics), ScanFailure> {
     scan_ntfs_tree_with_options(root, cancel, true, &mut on_progress)
 }
 
@@ -417,7 +417,7 @@ pub fn scan_ntfs_tree_with_options(
     cancel: &AtomicBool,
     dedupe_hardlinks: bool,
     mut on_progress: impl FnMut(ScanProgressUpdate),
-) -> anyhow::Result<(DirEntry, ScanDiagnostics)> {
+) -> Result<(DirEntry, ScanDiagnostics), ScanFailure> {
     let result = std::thread::scope(|scope| {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let worker = scope.spawn(move || scan_mft_usn(root, &tx, cancel, dedupe_hardlinks));
@@ -427,13 +427,9 @@ pub fn scan_ntfs_tree_with_options(
         }
         worker
             .join()
-            .map_err(|_| anyhow::anyhow!("NTFS scanner worker panicked"))
+            .map_err(|_| ScanFailure::Failed(anyhow::anyhow!("NTFS scanner worker panicked")))
     })?;
-    match result {
-        Ok(build) => Ok((build.tree, build.diagnostics)),
-        Err(ScanFailure::Cancelled) => anyhow::bail!("NTFS scan cancelled"),
-        Err(ScanFailure::BackendUnavailable(error) | ScanFailure::Failed(error)) => Err(error),
-    }
+    result.map(|build| (build.tree, build.diagnostics))
 }
 
 /// MFT record from USN enumeration.

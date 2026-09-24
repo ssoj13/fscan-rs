@@ -95,10 +95,32 @@ pub struct ScanBuild {
     pub diagnostics: ScanDiagnostics,
 }
 
+/// Failure from the native NTFS scanner. Backend unavailability permits a
+/// standard-walker fallback; cancellation and other failures remain distinct.
+#[derive(Debug)]
 pub enum ScanFailure {
     Cancelled,
     BackendUnavailable(anyhow::Error),
     Failed(anyhow::Error),
+}
+
+impl std::fmt::Display for ScanFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => f.write_str("scan cancelled"),
+            Self::BackendUnavailable(error) => write!(f, "scan backend unavailable: {error}"),
+            Self::Failed(error) => write!(f, "scan failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ScanFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Cancelled => None,
+            Self::BackendUnavailable(error) | Self::Failed(error) => Some(error.as_ref()),
+        }
+    }
 }
 
 impl From<anyhow::Error> for ScanFailure {
