@@ -7,6 +7,90 @@ use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
+#[cfg(windows)]
+mod ntfs;
+#[cfg(windows)]
+mod scanner;
+
+#[cfg(windows)]
+pub use ntfs::{
+    diagnose_fsctl_enum_usn, is_ntfs_available, mft_dump_names, probe_raw_volume_access,
+    scan_ntfs_tree, scan_ntfs_tree_with_options, scan_ntfs_tree_with_progress,
+};
+#[cfg(windows)]
+pub use scanner::{ScanDiagnostics, ScanMsg, ScanPhase, ScanProgressUpdate, TreeEntry};
+
+#[cfg(windows)]
+#[derive(Debug)]
+pub enum NtfsStreamError {
+    Backend(anyhow::Error),
+    Sink(anyhow::Error),
+    Cancelled,
+}
+
+/// Stream a bounded NTFS tree through the same entry interface as the standard
+/// backend. If the native backend is unavailable or its entry cap is reached,
+/// this returns an error before publishing any entry to the sink.
+#[cfg(windows)]
+pub fn scan_ntfs_stream(
+    root: &Path,
+    cancel: &AtomicBool,
+    include: impl Fn(&Path) -> bool,
+    on_entry: impl FnMut(&Entry, Progress) -> anyhow::Result<Visit>,
+) -> Result<Progress, NtfsStreamError> {
+    let (tree, diagnostics) = scan_ntfs_tree(root, cancel).map_err(NtfsStreamError::Backend)?;
+    stream_ntfs_tree(&tree, &diagnostics, cancel, include, on_entry)
+}
+
+/// Stream an already scanned NTFS tree, allowing callers to report progress
+/// during `scan_ntfs_tree_with_progress` before they begin publishing entries.
+#[cfg(windows)]
+pub fn stream_ntfs_tree(
+    tree: &TreeEntry,
+    diagnostics: &ScanDiagnostics,
+    cancel: &AtomicBool,
+    include: impl Fn(&Path) -> bool,
+    mut on_entry: impl FnMut(&Entry, Progress) -> anyhow::Result<Visit>,
+) -> Result<Progress, NtfsStreamError> {
+    let mut progress = Progress {
+        errors: diagnostics.total_errors(),
+        ..Progress::default()
+    };
+    let mut pending = tree.children.iter().rev().collect::<Vec<_>>();
+    while let Some(node) = pending.pop() {
+        if cancel.load(Ordering::Acquire) {
+            return Err(NtfsStreamError::Cancelled);
+        }
+        if !include(&node.path) {
+            continue;
+        }
+        if node.is_dir {
+            pending.extend(node.children.iter().rev());
+            progress.directories = progress.directories.saturating_add(1);
+        } else {
+            progress.files = progress.files.saturating_add(1);
+        }
+        progress.entries = progress.entries.saturating_add(1);
+        let entry = Entry {
+            path: node.path.clone(),
+            name: node.path.file_name().unwrap_or_default().to_owned(),
+            kind: if node.is_dir {
+                EntryKind::Directory
+            } else {
+                EntryKind::File
+            },
+            len: node.own_size,
+            modified: node.modified_time.and_then(|seconds| {
+                std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds))
+            }),
+        };
+        if on_entry(&entry, progress).map_err(NtfsStreamError::Sink)? == Visit::Stop {
+            break;
+        }
+    }
+    Ok(progress)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EntryKind {
     File,
@@ -164,5 +248,62 @@ mod tests {
             |_, _| Ok::<_, std::convert::Infallible>(Visit::Continue),
         );
         assert!(matches!(result, Err(ScanError::Cancelled)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ntfs_backend_streams_nested_temp_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        if !is_ntfs_available(tmp.path()) {
+            return;
+        }
+        std::fs::create_dir(tmp.path().join("nested")).unwrap();
+        std::fs::write(tmp.path().join("nested").join("needle.txt"), b"needle").unwrap();
+        std::fs::hard_link(
+            tmp.path().join("nested").join("needle.txt"),
+            tmp.path().join("nested").join("alias.txt"),
+        )
+        .unwrap();
+        let mut updates = 0;
+        let (tree, diagnostics) =
+            scan_ntfs_tree_with_progress(tmp.path(), &AtomicBool::new(false), |_| updates += 1)
+                .unwrap();
+        assert!(updates >= 1);
+        let mut names = Vec::new();
+        let progress = stream_ntfs_tree(
+            &tree,
+            &diagnostics,
+            &AtomicBool::new(false),
+            |_| true,
+            |entry, _| {
+                names.push(entry.name.clone());
+                Ok(Visit::Continue)
+            },
+        )
+        .unwrap_or_else(|error| panic!("NTFS scan failed: {error:?}"));
+        assert!(progress.entries >= 2);
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "needle.txt" || name == "alias.txt")
+        );
+
+        let (tree, diagnostics) =
+            scan_ntfs_tree_with_options(tmp.path(), &AtomicBool::new(false), false, |_| {})
+                .unwrap();
+        let mut names = Vec::new();
+        stream_ntfs_tree(
+            &tree,
+            &diagnostics,
+            &AtomicBool::new(false),
+            |_| true,
+            |entry, _| {
+                names.push(entry.name.clone());
+                Ok(Visit::Continue)
+            },
+        )
+        .unwrap();
+        assert!(names.iter().any(|name| name == "needle.txt"));
+        assert!(names.iter().any(|name| name == "alias.txt"));
     }
 }
