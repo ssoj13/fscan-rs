@@ -93,9 +93,14 @@ pub fn scan_standard<E>(
         } else {
             EntryKind::File
         };
-        let metadata = match item.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => {
+        let metadata = if kind == EntryKind::Symlink {
+            std::fs::symlink_metadata(item.path()).ok()
+        } else {
+            item.metadata().ok()
+        };
+        let metadata = match metadata {
+            Some(metadata) => metadata,
+            None => {
                 progress.errors = progress.errors.saturating_add(1);
                 continue;
             }
