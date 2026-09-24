@@ -1,0 +1,13 @@
+[package]
+name = "fscan-rs"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Streaming filesystem traversal for indexers and tree consumers"
+readme = "README.md"
+
+[dependencies]
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
